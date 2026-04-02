@@ -114,6 +114,8 @@ def _msg_to_gemini_parts(msg: dict, id_to_name: dict[str, str], id_to_sig: dict[
             part = {"functionCall": fc}
             if tid and tid in id_to_sig:
                 part["thoughtSignature"] = id_to_sig[tid]
+            else:
+                part["thoughtSignature"] = "skip_thought_signature_validator"
             parts.append(part)
 
         elif btype == "tool_result":

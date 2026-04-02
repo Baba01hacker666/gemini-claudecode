@@ -127,36 +127,37 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _handle_stream(self, gem_payload: dict, original_model: str, gemini_model: str, t_start: float):
         url = self._gemini_url(gemini_model, stream=True)
 
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
 
-        def write_sse(event: str, data: dict):
-            try:
+            def write_sse(event: str, data: dict):
                 self.wfile.write(sse(event, data))
                 self.wfile.flush()
-            except Exception:
-                raise
 
-        def send_error_event(message: str):
-            try:
-                self.wfile.write(f"event: error\ndata: {json.dumps({'type':'error','error':{'type':'api_error','message':message}})}\n\n".encode())
-                self.wfile.flush()
-            except Exception:
-                pass
+            def send_error_event(message: str):
+                try:
+                    self.wfile.write(f"event: error\ndata: {json.dumps({'type':'error','error':{'type':'api_error','message':message}})}\n\n".encode())
+                    self.wfile.flush()
+                except Exception:
+                    pass
 
-        msg_id = f"msg_{uuid.uuid4().hex}"
-        write_sse("message_start", {
-            "type": "message_start",
-            "message": {
-                "id": msg_id, "type": "message", "role": "assistant", "model": original_model,
-                "content": [], "stop_reason": None, "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
-            },
-        })
+            msg_id = f"msg_{uuid.uuid4().hex}"
+            write_sse("message_start", {
+                "type": "message_start",
+                "message": {
+                    "id": msg_id, "type": "message", "role": "assistant", "model": original_model,
+                    "content": [], "stop_reason": None, "stop_sequence": None,
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                },
+            })
+        except (BrokenPipeError, ConnectionError):
+            log_req.warning("Client disconnected before stream start")
+            return
 
         text_block_open = False
         text_block_idx = 0
@@ -239,6 +240,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             if sr == "tool_use" or stop_reason != "tool_use":
                                 stop_reason = sr
 
+        except (BrokenPipeError, ConnectionError):
+            log_req.warning("Client disconnected during stream")
+            return
         except Exception as e:
             send_error_event(f"Stream Failed: {e}")
             return

@@ -24,6 +24,8 @@ _load_dotenv()
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
 PROXY_API_KEY   = os.getenv("PROXY_API_KEY")
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+UPSTREAM_PROVIDER = os.getenv("UPSTREAM_PROVIDER", "gemini").strip().lower()
 PROXY_PORT      = int(os.getenv("PROXY_PORT", 8083))
 LOG_LEVEL       = os.getenv("LOG_LEVEL", "INFO")
 

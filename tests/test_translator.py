@@ -1,5 +1,5 @@
 import unittest
-from app.translator import anthropic_messages_to_gemini, gemini_response_to_anthropic
+from app.translator import anthropic_messages_to_gemini, gemini_response_to_anthropic, build_ollama_payload, ollama_response_to_anthropic
 
 class TestTranslator(unittest.TestCase):
     def test_anthropic_messages_to_gemini_text(self):
@@ -39,6 +39,26 @@ class TestTranslator(unittest.TestCase):
         self.assertEqual(anthropic_response["stop_reason"], "end_turn")
         self.assertEqual(anthropic_response["usage"]["input_tokens"], 10)
         self.assertEqual(anthropic_response["usage"]["output_tokens"], 5)
+
+    def test_build_ollama_payload_text(self):
+        body = {
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{"role": "user", "content": "Hello Ollama"}],
+            "stream": True,
+            "temperature": 0.2,
+        }
+        payload, original_model, _ = build_ollama_payload(body)
+        self.assertEqual(original_model, "claude-3-5-sonnet-20241022")
+        self.assertTrue(payload["stream"])
+        self.assertEqual(payload["messages"][0]["role"], "user")
+        self.assertEqual(payload["messages"][0]["content"], "Hello Ollama")
+        self.assertEqual(payload["options"]["temperature"], 0.2)
+
+    def test_ollama_response_to_anthropic_text(self):
+        resp = {"message": {"content": "Hi from Ollama"}}
+        anthropic_response = ollama_response_to_anthropic(resp, "claude-sonnet-4-6")
+        self.assertEqual(anthropic_response["role"], "assistant")
+        self.assertEqual(anthropic_response["content"][0]["text"], "Hi from Ollama")
 
 if __name__ == "__main__":
     unittest.main()

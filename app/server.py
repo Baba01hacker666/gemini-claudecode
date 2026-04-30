@@ -1,6 +1,6 @@
 import threading
 from http.server import HTTPServer
-from app.config import PROXY_PORT, GEMINI_API_KEY, DEFAULT_MODEL, PROXY_API_KEY
+from app.config import PROXY_PORT, GEMINI_API_KEY, DEFAULT_MODEL, PROXY_API_KEY, UPSTREAM_PROVIDER
 from app.proxy import ProxyHandler
 
 class ThreadedHTTPServer(HTTPServer):
@@ -13,7 +13,7 @@ class ThreadedHTTPServer(HTTPServer):
         finally: self.shutdown_request(request)
 
 def run_server():
-    if not GEMINI_API_KEY:
+    if UPSTREAM_PROVIDER == "gemini" and not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set — add it to .env or export it")
 
     server = ThreadedHTTPServer(("0.0.0.0", PROXY_PORT), ProxyHandler)

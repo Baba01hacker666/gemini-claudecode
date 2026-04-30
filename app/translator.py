@@ -221,6 +221,54 @@ def build_gemini_payload(body: dict) -> tuple[dict, str, str]:
 
     return payload, original_model, gemini_model
 
+def build_ollama_payload(body: dict) -> tuple[dict, str, str]:
+    original_model = body.get("model", "claude-sonnet-4-6")
+    ollama_model   = resolve_model(original_model)
+    messages = body.get("messages", [])
+    id_to_name, id_to_sig = build_tool_metadata(messages)
+    contents = anthropic_messages_to_gemini(messages, id_to_name, id_to_sig)
+    system_text = normalise_system(body.get("system"))
+
+    ollama_messages: list[dict] = []
+    if system_text:
+        ollama_messages.append({"role": "system", "content": system_text})
+    for msg in contents:
+        parts = msg.get("parts", [])
+        text = "\n".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text"))
+        if text:
+            ollama_messages.append({"role": "assistant" if msg.get("role") == "model" else "user", "content": text})
+
+    payload: dict[str, Any] = {
+        "model": ollama_model,
+        "messages": ollama_messages,
+        "stream": bool(body.get("stream", False)),
+    }
+    options: dict[str, Any] = {}
+    if body.get("max_tokens"):
+        options["num_predict"] = body["max_tokens"]
+    if body.get("temperature") is not None:
+        options["temperature"] = body["temperature"]
+    if body.get("top_p") is not None:
+        options["top_p"] = body["top_p"]
+    if body.get("stop_sequences"):
+        options["stop"] = body["stop_sequences"]
+    if options:
+        payload["options"] = options
+    return payload, original_model, ollama_model
+
+def ollama_response_to_anthropic(resp: dict, original_model: str) -> dict:
+    text = ((resp.get("message") or {}).get("content")) or resp.get("response") or ""
+    return {
+        "id": f"msg_{uuid.uuid4().hex}",
+        "type": "message",
+        "role": "assistant",
+        "model": original_model,
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+
 # ─── Gemini → Anthropic Conversion ───────────────────────────────────────────
 _FINISH_MAP: dict[str | None, str] = {
     "STOP":                       "end_turn",

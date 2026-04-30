@@ -3,12 +3,14 @@ import time
 import uuid
 import httpx
 from http.server import BaseHTTPRequestHandler
-from app.config import GEMINI_API_KEY, PROXY_API_KEY, GEMINI_BASE_URL
+from app.config import GEMINI_API_KEY, PROXY_API_KEY, GEMINI_BASE_URL, OLLAMA_BASE_URL, UPSTREAM_PROVIDER
 from app.logger import log_req
 from app.schema import validate_anthropic_request
 from app.translator import (
     build_gemini_payload,
+    build_ollama_payload,
     gemini_response_to_anthropic,
+    ollama_response_to_anthropic,
     gemini_finish_to_anthropic,
     extract_usage
 )
@@ -37,9 +39,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self._send_json(status, error_payload)
 
     def _gemini_headers(self) -> dict:
+        if UPSTREAM_PROVIDER == "ollama":
+            return {"Content-Type": "application/json"}
         return {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
     def _gemini_url(self, model: str, stream: bool) -> str:
+        if UPSTREAM_PROVIDER == "ollama":
+            return f"{OLLAMA_BASE_URL}/api/chat"
         method = "streamGenerateContent" if stream else "generateContent"
         url = f"{GEMINI_BASE_URL}/models/{model}:{method}"
         return url + "?alt=sse" if stream else url
@@ -49,10 +55,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if self.path.split("?")[0] in ("/", "/health"):
             self._send_json(200, {
                 "status":        "ok",
-                "service":       "DCT Claude→Gemini Proxy v2.5",
+                "service":       f"DCT Claude→{UPSTREAM_PROVIDER.capitalize()} Proxy v2.5",
                 "default_model": DEFAULT_MODEL,
                 "small_model":   SMALL_MODEL,
-                "upstream":      GEMINI_BASE_URL,
+                "upstream":      OLLAMA_BASE_URL if UPSTREAM_PROVIDER == "ollama" else GEMINI_BASE_URL,
             })
         else:
             self._send_error(404, "not found")
@@ -90,7 +96,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                      original_model, is_streaming, len(body.get("messages", [])))
 
         try:
-            gem_payload, original_model, gemini_model = build_gemini_payload(body)
+            if UPSTREAM_PROVIDER == "ollama":
+                gem_payload, original_model, gemini_model = build_ollama_payload(body)
+            else:
+                gem_payload, original_model, gemini_model = build_gemini_payload(body)
         except Exception as e:
             log_req.error("Payload build failed: %s", e, exc_info=True)
             self._send_error(400, f"payload build error: {e}")
@@ -117,7 +126,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         try:
             gem_json = resp.json()
-            anthropic_resp = gemini_response_to_anthropic(gem_json, original_model)
+            anthropic_resp = (
+                ollama_response_to_anthropic(gem_json, original_model)
+                if UPSTREAM_PROVIDER == "ollama"
+                else gemini_response_to_anthropic(gem_json, original_model)
+            )
         except Exception as e:
             self._send_error(500, f"Translation Error: {e}")
             return
@@ -166,6 +179,36 @@ class ProxyHandler(BaseHTTPRequestHandler):
         final_usage = {"input_tokens": 0, "output_tokens": 0}
 
         try:
+            if UPSTREAM_PROVIDER == "ollama":
+                with httpx.Client(timeout=180.0) as client:
+                    with client.stream("POST", url, headers=self._gemini_headers(), json=gem_payload) as resp:
+                        if resp.status_code != 200:
+                            send_error_event(f"Ollama API Error {resp.status_code}: {resp.read().decode(errors='replace')[:200]}")
+                            return
+                        for line in resp.iter_lines():
+                            if not line:
+                                continue
+                            if isinstance(line, bytes):
+                                line = line.decode(errors="replace")
+                            try:
+                                chunk = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            text_chunk = ((chunk.get("message") or {}).get("content")) or ""
+                            if text_chunk:
+                                if not text_block_open:
+                                    text_block_idx, next_block_idx = next_block_idx, next_block_idx + 1
+                                    text_block_open = True
+                                    write_sse("content_block_start", {"type": "content_block_start", "index": text_block_idx, "content_block": {"type": "text", "text": ""}})
+                                write_sse("content_block_delta", {"type": "content_block_delta", "index": text_block_idx, "delta": {"type": "text_delta", "text": text_chunk}})
+                            if chunk.get("done") is True:
+                                break
+                if text_block_open:
+                    write_sse("content_block_stop", {"type": "content_block_stop", "index": text_block_idx})
+                write_sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": final_usage})
+                write_sse("message_stop", {"type": "message_stop"})
+                return
+
             with httpx.Client(timeout=180.0) as client:
                 with client.stream("POST", url, headers=self._gemini_headers(), json=gem_payload) as resp:
                     if resp.status_code != 200:
@@ -173,6 +216,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         return
 
                     for line in resp.iter_lines():
+                        if isinstance(line, bytes):
+                            line = line.decode(errors="replace")
                         if not line.startswith("data: "): continue
                         raw = line[6:].strip()
                         if not raw: continue
